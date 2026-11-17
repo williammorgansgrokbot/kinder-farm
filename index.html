@@ -369,7 +369,7 @@ var CROPS=['tomato','carrot','corn','cabbage','blueberry','eggplant','strawberry
 var NBEDS=25, GCOLS=[330,470,610,750,890], GROWS=[166,284,402,520,638];
 var BEDS=[]; for(var bi=0;bi<NBEDS;bi++) BEDS.push({x:GCOLS[bi%5],y:GROWS[(bi/5)|0],stage:0,crop:bi%12,t:0,busy:0,i:bi});
 function emptyBasket(){ var o={}; CROPS.forEach(function(c){o[c]=0;}); return o; }
-var basket=emptyBasket(), basketBump=0;
+var basket=emptyBasket(), basketBump=0, basketPile=[], PILE_VIS=15, PILE_KEEP=60;
 /* classes: separate names + garden progress per class (made-up placeholder names, no student data) */
 var DEFAULT_NAMES={
  morning:['Ava','Liam','Mia','Noah','Sofia','Mateo','Zoe','Elijah','Aria','Jayden','Lily','Diego','Chloe','Malik','Emma','Leo','Isabella','Kai','Grace','Omar','Nora'],
@@ -380,11 +380,15 @@ function lsGet(k){ try{ return localStorage.getItem(STORE_KEY+k); }catch(e){ ret
 function lsSet(k,v){ try{ localStorage.setItem(STORE_KEY+k,v); }catch(e){} }
 function loadNames(){ ['morning','afternoon'].forEach(function(c){ var v=lsGet('_names_'+c); if(v){ try{ var a=JSON.parse(v); if(a&&a.length!==undefined) NAMES[c]=a.slice(0,NBEDS); }catch(e){} } }); }
 function saveNames(c){ lsSet('_names_'+c,JSON.stringify(NAMES[c])); }
-function saveGarden(){ lsSet('_garden_'+klass,JSON.stringify({beds:BEDS.map(function(b){return b.stage;}),basket:basket})); }
+function saveGarden(){ lsSet('_garden_'+klass,JSON.stringify({beds:BEDS.map(function(b){return b.stage;}),basket:basket,pile:basketPile})); }
 function loadGarden(){
   var v=lsGet('_garden_'+klass), d=null; if(v){ try{ d=JSON.parse(v); }catch(e){} }
   BEDS.forEach(function(b,i){ b.stage=(d&&d.beds&&d.beds[i]>=0&&d.beds[i]<=3)?d.beds[i]:0; b.t=1; b.busy=0; });
   basket=emptyBasket(); if(d&&d.basket){ for(var k in basket) if(d.basket[k]>0) basket[k]=d.basket[k]|0; }
+  basketPile=[];
+  if(d&&d.pile&&d.pile.length){ for(var pi=0;pi<d.pile.length;pi++) if(basket[d.pile[pi]]!==undefined) basketPile.push(d.pile[pi]); }
+  else { var left={}, any=true; for(var k2 in basket) left[k2]=Math.min(basket[k2],PILE_KEEP); while(any&&basketPile.length<PILE_KEEP){ any=false; for(var k3 in left) if(left[k3]>0){ left[k3]--; basketPile.push(k3); any=true; } } }
+  if(basketPile.length>PILE_KEEP) basketPile=basketPile.slice(basketPile.length-PILE_KEEP);
 }
 function setClass(c,silent){
   if(c!==klass){ saveGarden(); klass=c; lsSet('_class',c); loadGarden(); }
@@ -413,8 +417,23 @@ function tigerPath(){ if(scene==='farm'&&(129-viewTop())<TIGER_H.farm*1.03+2){
     return PATHS.farmSide; }
   return PATHS[scene]; }
 var lastTigerPath=null, TBOX=null;
-var tiger={x:660,y:520,i:0,happy:0,flip:false,dest:null,onArrive:null,wait:0,step:0};
-function tigerReset(){ var p=tigerPath(); lastTigerPath=p; tiger.i=0; tiger.x=p[0][0]; tiger.y=p[0][1]; tiger.dest=null; tiger.happy=0; tiger.wait=0; }
+var tiger={x:660,y:520,i:0,happy:0,flip:false,dest:null,onArrive:null,wait:0,step:0,vx:0,vy:0,hvx:0,spd:0,face:1,faceT:1,gait:0,sz:1};
+function sstep(x){ x=Math.max(0,Math.min(1,x)); return x*x*(3-2*x); }
+/* closed Catmull-Rom spline through the campus path, arc-length sampled, for a smooth constant-speed ride */
+var SPL=(function(P){ var n=P.length, pts=[], seg=[], len=[0], L=0, N=40;
+  for(var i=0;i<n;i++){ var p0=P[(i-1+n)%n], p1=P[i], p2=P[(i+1)%n], p3=P[(i+2)%n];
+    for(var j=0;j<N;j++){ var t=j/N, t2=t*t, t3=t2*t;
+      var x=0.5*((2*p1[0])+(-p0[0]+p2[0])*t+(2*p0[0]-5*p1[0]+4*p2[0]-p3[0])*t2+(-p0[0]+3*p1[0]-3*p2[0]+p3[0])*t3);
+      var y=0.5*((2*p1[1])+(-p0[1]+p2[1])*t+(2*p0[1]-5*p1[1]+4*p2[1]-p3[1])*t2+(-p0[1]+3*p1[1]-3*p2[1]+p3[1])*t3);
+      if(pts.length){ var q=pts[pts.length-1]; L+=Math.sqrt((x-q[0])*(x-q[0])+(y-q[1])*(y-q[1])); len.push(L); } pts.push([x,y]); seg.push(i); } }
+  var q0=pts[pts.length-1]; L+=Math.sqrt((pts[0][0]-q0[0])*(pts[0][0]-q0[0])+(pts[0][1]-q0[1])*(pts[0][1]-q0[1]));
+  return {pts:pts,seg:seg,len:len,L:L};
+})(PATHS.campus);
+function splIdx(s){ s=((s%SPL.L)+SPL.L)%SPL.L; var lo=0, hi=SPL.len.length-1; while(lo<hi){ var m=(lo+hi+1)>>1; if(SPL.len[m]<=s) lo=m; else hi=m-1; } return lo; }
+function splineAt(s){ s=((s%SPL.L)+SPL.L)%SPL.L; var i=splIdx(s), a=SPL.pts[i], b=SPL.pts[(i+1)%SPL.pts.length], l0=SPL.len[i], l1=(i+1<SPL.len.length)?SPL.len[i+1]:SPL.L, f=l1>l0?(s-l0)/(l1-l0):0;
+  return {x:a[0]+(b[0]-a[0])*f, y:a[1]+(b[1]-a[1])*f, seg:SPL.seg[i]}; }
+function splNearest(x,y){ var best=0, bd=1e18; for(var i=0;i<SPL.pts.length;i++){ var dx=SPL.pts[i][0]-x, dy=SPL.pts[i][1]-y, d=dx*dx+dy*dy; if(d<bd){bd=d;best=i;} } return SPL.len[best]; }
+function tigerReset(){ var p=tigerPath(); lastTigerPath=p; tiger.vx=tiger.vy=tiger.spd=tiger.hvx=0; tiger.i=0; tiger.x=p[0][0]; tiger.y=p[0][1]; tiger.dest=null; tiger.happy=0; tiger.wait=0; }
 var CAMPUS_SPOTS=[
  {id:'play',x:690,y:140,rx:150,ry:85,icon:'i_play',ix:500,iy:170},
  {id:'farm',x:1010,y:215,rx:170,ry:95,icon:'i_farm',ix:1010,iy:145},
@@ -440,22 +459,23 @@ function eggTap(w){
   if(eggN>=5&&!egg){ eggN=0; startEgg(); }
 }
 function startEgg(){
-  egg={phase:'ride',t:5,tx:0,ty:0,vx:0,vy:0,k:0};
+  egg={phase:'ride',t:5,tx:0,ty:0,vx:0,vy:0,k:0,s:splNearest(tiger.x,tiger.y),bx:tiger.x,by:tiger.y};
   tiger.happy=0; tiger.wait=0; tiger.dest=null; tiger.onArrive=null;
   burst(tiger.x,tiger.y-60,'star',18); SFX.yeehaw(); say('yeehaw');
 }
-function eggBackPos(){ var th=TIGER_H[scene]*1.35; return {x:tiger.x+(tiger.flip?1:-1)*th*0.08, y:tiger.y-th*0.55}; }
+function eggBackPos(){ var th=TIGER_H[scene]*tiger.sz; return {x:tiger.x-(tiger.face<0?-1:1)*th*0.08, y:tiger.y-th*0.55}; }
 function updateEgg(dt){
   if(!egg) return;
   if(scene!=='campus'){ egg=null; return; }
   egg.t-=dt;
   if(egg.phase==='ride'){
     clopT-=dt; if(clopT<=0){ clopT=0.17; SFX.clop(); }
-    if(egg.t<=0){ var p=eggBackPos(); egg.phase='hop'; egg.k=0; egg.tx=p.x; egg.ty=p.y; egg.sx=p.x; egg.sy=p.y;
-      egg.ex=tiger.x+(tiger.flip?-1:1)*70; egg.ey=tiger.y+6; SFX.boing(); say('bye'); }
+    if(egg.t<=0){ var p=eggBackPos(); egg.phase='hop'; egg.k=0; egg.tx=p.x; egg.ty=p.y; egg.sx=p.x; egg.sy=p.y; egg.hf=tiger.face<0;
+      egg.ex=tiger.x+(tiger.face<0?-1:1)*85; egg.ey=tiger.y+8; SFX.boing(); say('bye');
+      var pc=PATHS.campus.length; tiger.i=(splineAt(egg.s).seg+1)%pc; tiger.vx=tiger.vy=0; }
   } else if(egg.phase==='hop'){
-    egg.k+=dt/0.6; var k=Math.min(1,egg.k); egg.tx=egg.sx+(egg.ex-egg.sx)*k; egg.ty=egg.sy+(egg.ey-egg.sy)*k-Math.sin(k*Math.PI)*60;
-    if(k>=1){ egg.phase='wave'; egg.t=1.8; hearts(egg.tx,egg.ty-90,4); tiger.happy=1.6; }
+    egg.k+=dt/0.75; var k=Math.min(1,egg.k), ke=sstep(k); egg.tx=egg.sx+(egg.ex-egg.sx)*ke; egg.ty=egg.sy+(egg.ey-egg.sy)*ke-Math.sin(ke*Math.PI)*70;
+    if(k>=1){ egg.phase='wave'; egg.t=1.8; egg.land=0; hearts(egg.tx,egg.ty-90,4); tiger.happy=1.6; }
   } else if(egg.phase==='wave'){
     if(egg.t<=0){ egg.phase='poof'; egg.t=0.45; burst(egg.tx,egg.ty-50,'star',20); SFX.grow(); }
   } else if(egg.phase==='poof'){
@@ -467,8 +487,8 @@ function drawTeacher(){
   var th=TIGER_H[scene]*1.35, a=1, sc=1;
   if(egg.phase==='poof'){ a=Math.max(0,egg.t/0.45); sc=1+(1-a)*0.4; }
   ctx.save(); ctx.globalAlpha=a; shadow(egg.tx,egg.phase==='hop'?egg.ey:egg.ty,th*0.5);
-  if(egg.phase==='hop') spr('teacher_ride',egg.tx,egg.ty,th*0.9,0.45,0.8,tiger.flip);
-  else spr('teacher_wave',egg.tx,egg.ty,th*0.62*sc,0.5,0.98,false,Math.sin(T*6)*0.05);
+  if(egg.phase==='hop') spr('teacher_ride',egg.tx,egg.ty,th*0.9,0.45,0.8,egg.hf,(egg.hf?1:-1)*Math.sin(Math.min(1,egg.k)*Math.PI)*0.12);
+  else { var lt=egg.phase==='wave'?Math.min(1,(1.8-egg.t)/0.25):1, sqy=1-0.12*Math.sin(lt*Math.PI); spr('teacher_wave',egg.tx,egg.ty,th*0.62*sc,0.5,0.98,false,Math.sin(T*4)*0.035,sqy); }
   ctx.restore();
 }
 
@@ -517,7 +537,7 @@ function harvest(b){
   say(['harvest','n1','n2','n3','crop_'+crop],{gap:120});
   pts.forEach(function(p,k){ setTimeout(function(){
     var bp=basketScreenPos();
-    FLY.push({img:crop,x:p[0],y:p[1]-40,screenTarget:true,tx:bp.x,ty:bp.y,t:0,d:0.8,s:80,onLand:function(){ if(hk!==klass) return; basket[crop]++; basketBump=1; SFX.count(basketTotal()); saveGarden(); }});
+    FLY.push({img:crop,x:p[0],y:p[1]-40,pileTarget:true,tx:bp.x,ty:bp.y,t:0,d:0.95,s:80,onLand:function(){ if(hk!==klass) return; basket[crop]++; basketPile.push(crop); if(basketPile.length>PILE_KEEP) basketPile.shift(); basketBump=1; SFX.count(basketTotal()); saveGarden(); var bs=basketBtn(); if(bs){ var sl=pileSlot(bs,Math.min(basketPile.length,PILE_VIS)-1,1); SPARK.push({x:sl.x,y:sl.y,t:0}); } }});
     FX.push({x:p[0],y:p[1]-70,vx:0,vy:-40,life:1.2,max:1.2,kind:'num',num:k+1,r:40,rot:0});
   },700+k*750); });
   FX.push({x:b.x,y:b.y-60,vx:0,vy:-30,life:1.4,max:1.4,kind:'name',txt:bedName(b),r:30,rot:0});
@@ -560,7 +580,26 @@ function goScene(s){
 }
 
 /* ---------------- UI buttons (screen space) ---------------- */
-var BTN=[];
+var BTN=[], SPARK=[];
+function basketBtn(){ for(var i=0;i<BTN.length;i++) if(BTN[i].id==='basket') return BTN[i]; return null; }
+function basketBounce(){ return 1+Math.sin((1-basketBump)*Math.PI*3)*0.09*basketBump; }
+var PILE_ROWS=[5,4,3,2,1];
+/* slot i (0 = bottom-left) in screen px for the basket button b; bb=bounce scale */
+function pileSlot(b,i,bb){
+  var bw=b.r*1.9*bb, bh=bw*170/152, bottom=b.y+b.r*0.55, top=bottom-bh, mouthY=top+bh*0.47;
+  var r=0, k=i; while(r<PILE_ROWS.length-1&&k>=PILE_ROWS[r]){ k-=PILE_ROWS[r]; r++; }
+  var n=PILE_ROWS[r], span=bw*0.62*(1-r*0.17), x=b.x+(n>1?(k/(n-1)-0.5)*span:0);
+  var jx=((i*37)%7-3)*bw*0.006, jy=((i*53)%5-2)*bw*0.006;
+  return {x:x+jx, y:mouthY-r*bw*0.105+jy+(r===0?bw*0.02:0), s:bw*(0.25-r*0.008), rot:(((i*29)%9)-4)*0.06};
+}
+function drawBasketPile(b){
+  var bb=basketBounce(), im=IMG.basket, bw=b.r*1.9*bb, bh=bw*im.height/im.width, bottom=b.y+b.r*0.55, x0=b.x-bw/2, top=bottom-bh;
+  ctx.drawImage(im,x0,top,bw,bh);
+  var vis=basketPile.slice(Math.max(0,basketPile.length-PILE_VIS));
+  for(var i=0;i<vis.length;i++){ var sl=pileSlot(b,i,bb); spr(vis[i],sl.x,sl.y,sl.s,0.5,0.62,false,sl.rot); }
+  if(vis.length){ var cut=0.5; ctx.drawImage(im,0,im.height*cut,im.width,im.height*(1-cut),x0,top+bh*cut,bw,bh*(1-cut)); }
+  for(var j=0;j<SPARK.length;j++){ var sp=SPARK[j], a=1-sp.t/0.5; if(a<=0) continue; ctx.save(); ctx.globalAlpha=a; ctx.strokeStyle='#fff6b0'; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(sp.x,sp.y,8+sp.t*60,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
+}
 function layoutButtons(){
   BTN=[];
   var l=PAD+SAFE.l, r=W-PAD-SAFE.r, t=PAD+SAFE.t, b=H-PAD-SAFE.b;
@@ -570,9 +609,9 @@ function layoutButtons(){
   for(var i=0;i<3;i++) BTN.push({id:'nav_'+navs[i],x:l+U/2,y:H/2+(i-1)*U*1.15,r:U/2});
   if(scene==='farm') BTN.push({id:'klass',x:l+U*1.7,y:t+U/2,r:U/2});
   BTN.push({id:'lock',x:r-U*0.22,y:t+U*0.22,r:U*0.3,small:1});
-  if(scene==='farm') BTN.push({id:'basket',x:r-U*1.3,y:t+U*0.62,r:U*0.62});
+  if(scene==='farm') BTN.push({id:'basket',x:r-U*0.95,y:t+U*1.05,r:U*0.62});
 }
-function basketScreenPos(){ var r=W-PAD-SAFE.r, t=PAD+SAFE.t; var p=toWorld(r-U*1.3,t+U*0.62); return {x:p.x,y:p.y}; }
+function basketScreenPos(){ var r=W-PAD-SAFE.r, t=PAD+SAFE.t; var p=toWorld(r-U*0.95,t+U*1.05); return {x:p.x,y:p.y}; }
 
 /* ---------------- input ---------------- */
 var lockHold=null, klassHold=null, klassWiggle=0;
@@ -672,18 +711,21 @@ function drawAnimal(a){
   spr(a.k,a.x,a.y-Math.abs(jump),a.w,0.5,0.97,a.flip,peck,sq);
 }
 function drawTiger(){
-  var th=TIGER_H[scene]*(egg?1.35:1), name, bob=0, sc=1, riding=egg&&egg.phase==='ride';
-  if(riding){ name=(tiger.step*5|0)%2?'tiger_walk1':'tiger_walk2'; bob=Math.abs(Math.sin(tiger.step*Math.PI*5))*th*0.12; }
-  else if(tiger.happy>0){ name=(tiger.happy*3|0)%2?'tiger_jump':'tiger_wave'; bob=Math.abs(Math.sin(tiger.happy*7))*th*0.18; }
-  else if(tiger.wait>0){ name='tiger_wave'; }
-  else { name=(tiger.step*4|0)%2?'tiger_walk1':'tiger_walk2'; bob=Math.abs(Math.sin(tiger.step*Math.PI*4))*th*0.05; }
+  /* one walk frame + procedural gait: the two painted walk frames differ by a few px, so swapping them read as jitter */
+  var th=TIGER_H[scene]*tiger.sz, name, bob=0, rock=0, riding=egg&&egg.phase==='ride';
+  var mv=Math.min(1,tiger.spd/(riding?150:80));
+  if(tiger.happy>0&&!riding){ name=(tiger.happy*3|0)%2?'tiger_jump':'tiger_wave'; bob=Math.abs(Math.sin(tiger.happy*7))*th*0.18; }
+  else if(tiger.wait>0&&tiger.spd<12&&!riding){ name='tiger_wave'; }
+  else { name='tiger_walk1'; bob=Math.abs(Math.sin(tiger.gait*Math.PI))*th*(riding?0.07:0.045)*mv; rock=Math.sin(tiger.gait*Math.PI)*(riding?0.035:0.025)*mv; }
   var room=(tiger.y-bob)-viewTop()-4; if(room>20&&th*(riding?1.45:1)>room) th=room/(riding?1.45:1);
-  var im=IMG[name]; var w=th*im.width/im.height*(name.indexOf('walk')>0?0.92:1);
-  if(name.indexOf('walk')>0){ w=th*1.25; }
-  shadow(tiger.x,tiger.y,w*0.8);
-  spr(name,tiger.x,tiger.y-bob,w,0.5,0.97,tiger.flip);
+  var im=IMG[name], w=(name==='tiger_walk1')?th*1.25:th*im.width/im.height, h=w*im.height/im.width;
+  var fa=Math.max(0.12,Math.abs(tiger.face)), sx=(tiger.face<0?-1:1)*fa, sq=1+(1-fa)*0.08;
+  shadow(tiger.x,tiger.y,w*0.8*(0.75+0.25*fa));
+  ctx.save(); ctx.translate(tiger.x,tiger.y-bob); ctx.rotate(rock); ctx.scale(sx,sq);
+  ctx.drawImage(im,-w/2,-h*0.97,w,h);
+  if(riding){ var ti=IMG.teacher_ride, tw=th*0.9, tth=tw*ti.height/ti.width; ctx.drawImage(ti,-th*0.08-tw*0.45,-th*0.55-tth*0.8,tw,tth); }
+  ctx.restore();
   TBOX={l:tiger.x-w/2,r:tiger.x+w/2,t:tiger.y-bob-th*0.97*(riding?1.45:1),b:tiger.y-bob+th*0.03};
-  if(riding){ var bp=eggBackPos(); spr('teacher_ride',bp.x,bp.y-bob,th*0.9,0.45,0.8,tiger.flip,(tiger.flip?-1:1)*Math.sin(tiger.step*Math.PI*5)*0.06); }
 }
 function drawFX(f){
   var a=Math.max(0,f.life/f.max); ctx.save(); ctx.globalAlpha=Math.min(1,a*1.5); ctx.translate(f.x,f.y); ctx.rotate(f.rot);
@@ -738,7 +780,7 @@ function drawUI(){
     else if(b.id==='lock'){ drawLock(b); }
     else if(b.id==='klass'){ var kf=1+classFlash*0.15, kw=Math.sin(klassWiggle*Math.PI*6)*klassWiggle*0.18; woodButton(b.x,b.y,b.r*kf,true); spr(klass==='morning'?'i_morning':'i_afternoon',b.x,b.y,b.r*1.62*kf,0.5,0.5,false,kw);
       if(klassHold){ ctx.save(); ctx.lineCap='round'; ctx.strokeStyle='rgba(255,250,240,0.55)'; ctx.lineWidth=b.r*0.2; ctx.beginPath(); ctx.arc(b.x,b.y,b.r*1.22,0,Math.PI*2); ctx.stroke(); ctx.strokeStyle='#ffd34d'; ctx.beginPath(); ctx.arc(b.x,b.y,b.r*1.22,-Math.PI/2,-Math.PI/2+Math.PI*2*Math.min(1,klassHold.t/2)); ctx.stroke(); ctx.restore(); } }
-    else if(b.id==='basket'){ var bb=1+basketBump*0.15; spr('basket',b.x,b.y+b.r*0.55,b.r*1.9*bb,0.5,1);
+    else if(b.id==='basket'){ drawBasketPile(b);
       var tot=counting?counting.n:basketTotal(); var tx=b.x-b.r*1.1, ty=b.y-b.r*0.12;
       ctx.save(); ctx.fillStyle='#fffaf0'; ctx.strokeStyle='#9a5a2a'; ctx.lineWidth=4; ctx.beginPath(); ctx.arc(tx,ty,b.r*0.5,0,Math.PI*2); ctx.fill(); ctx.stroke(); ctx.restore();
       bigNumber(String(tot),tx,ty+2,b.r*(tot>9?0.55:0.7)*(counting?1.15:1)); }
@@ -759,7 +801,8 @@ function update(dt){
   if(fadeTo){ fade+=dt*2.2; if(fade>=1){ scene=fadeTo; fadeTo=null; fade=1; tigerReset(); computeView(); } }
   else if(fade>0){ fade=Math.max(0,fade-dt*2.2); }
   if(seasonFade>0) seasonFade=Math.max(0,seasonFade-dt*1.2);
-  if(basketBump>0) basketBump=Math.max(0,basketBump-dt*3);
+  if(basketBump>0) basketBump=Math.max(0,basketBump-dt*2.2);
+  for(var sj=SPARK.length-1;sj>=0;sj--){ SPARK[sj].t+=dt; if(SPARK[sj].t>0.5) SPARK.splice(sj,1); }
   if(classFlash>0) classFlash=Math.max(0,classFlash-dt*2);
   if(klassHold){ klassHold.t+=dt; if(scene!=='farm') klassHold=null; else if(klassHold.t>=2){ klassHold=null; setClass(klass==='morning'?'afternoon':'morning'); } }
   if(klassWiggle>0) klassWiggle=Math.max(0,klassWiggle-dt*2.5);
@@ -773,19 +816,32 @@ function update(dt){
   });
   // tiger
   updateEgg(dt);
-  if(egg&&egg.phase==='ride'){ var rp=PATHS.campus[tiger.i], rdx=rp[0]-tiger.x, rdy=rp[1]-tiger.y, rd=Math.sqrt(rdx*rdx+rdy*rdy);
-    if(rd<6) tiger.i=(tiger.i+1)%PATHS.campus.length; else { tiger.x+=rdx/rd*150*dt; tiger.y+=rdy/rd*150*dt; tiger.flip=rdx<0; tiger.step+=dt*2.4; } }
-  else if(egg&&egg.phase!=='ride'&&tiger.happy<=0){ }
-  else if(tiger.happy>0){ tiger.happy-=dt; }
-  else if(tiger.wait>0){ tiger.wait-=dt; }
+  tiger.sz+=((egg?1.35:1)-tiger.sz)*(1-Math.exp(-dt*7));
+  var riding=egg&&egg.phase==='ride';
+  if(riding){ var el=5-egg.t, v=150*Math.min(sstep(el/0.8),sstep(Math.max(0,egg.t)/0.9));
+    egg.s+=v*dt; var q=splineAt(egg.s), bl=sstep(el/0.7), nx=egg.bx+(q.x-egg.bx)*bl, ny=egg.by+(q.y-egg.by)*bl;
+    if(dt>0){ tiger.vx=(nx-tiger.x)/dt; tiger.vy=(ny-tiger.y)/dt; } tiger.x=nx; tiger.y=ny; }
   else {
-    var tp=tigerPath(); if(tp!==lastTigerPath&&!tiger.dest){ lastTigerPath=tp; tiger.i=0; tiger.x=tp[0][0]; tiger.y=tp[0][1]; }
-    var tgt; if(tiger.dest) tgt=tiger.dest; else { var p=tp[tiger.i%tp.length]; tgt={x:p[0],y:p[1]}; }
-    var dx=tgt.x-tiger.x, dy=tgt.y-tiger.y, d=Math.sqrt(dx*dx+dy*dy), sp=(scene==='campus'?55:85)*(tiger.dest?2:1);
-    if(d<4){ if(tiger.dest){ tiger.dest=null; if(tiger.onArrive){ var f=tiger.onArrive; tiger.onArrive=null; f(); } }
-      else { tiger.i=(tiger.i+1)%tp.length; if(Math.random()<0.3) tiger.wait=1.2+Math.random()*1.5; } }
-    else { tiger.x+=dx/d*sp*dt; tiger.y+=dy/d*sp*dt; tiger.flip=dx<0; tiger.step+=dt*(tiger.dest?1.6:1); }
+    var dvx=0, dvy=0;
+    if(tiger.happy>0){ tiger.happy-=dt; }
+    else if(egg){ }
+    else if(tiger.wait>0){ tiger.wait-=dt; }
+    else {
+      var tp=tigerPath(); if(tp!==lastTigerPath&&!tiger.dest){ lastTigerPath=tp; tiger.i=0; tiger.x=tp[0][0]; tiger.y=tp[0][1]; tiger.vx=tiger.vy=0; }
+      var tgt; if(tiger.dest) tgt=tiger.dest; else { var p=tp[tiger.i%tp.length]; tgt={x:p[0],y:p[1]}; }
+      var dx=tgt.x-tiger.x, dy=tgt.y-tiger.y, d=Math.sqrt(dx*dx+dy*dy), sp=(scene==='campus'?55:85)*(tiger.dest?2:1);
+      if(tiger.dest?d<6:d<18){ if(tiger.dest){ tiger.dest=null; if(tiger.onArrive){ var f=tiger.onArrive; tiger.onArrive=null; f(); } }
+        else { tiger.i=(tiger.i+1)%tp.length; if(Math.random()<0.3) tiger.wait=1.2+Math.random()*1.5; } }
+      else { var sp2=tiger.dest?sp*Math.max(0.15,Math.min(1,d/60)):sp; dvx=dx/d*sp2; dvy=dy/d*sp2; }
+    }
+    var kk=1-Math.exp(-dt*(tiger.dest?6:3.5)); tiger.vx+=(dvx-tiger.vx)*kk; tiger.vy+=(dvy-tiger.vy)*kk;
+    tiger.x+=tiger.vx*dt; tiger.y+=tiger.vy*dt;
   }
+  tiger.spd=Math.sqrt(tiger.vx*tiger.vx+tiger.vy*tiger.vy);
+  tiger.hvx+=(tiger.vx-tiger.hvx)*(1-Math.exp(-dt*6));
+  if(tiger.hvx>14) tiger.faceT=1; else if(tiger.hvx<-14) tiger.faceT=-1;
+  var fr=dt/0.18*2; tiger.face+=Math.max(-fr,Math.min(fr,tiger.faceT-tiger.face)); tiger.flip=tiger.face<0;
+  tiger.gait+=tiger.spd*dt/(riding?62:46);
   for(var i=FX.length-1;i>=0;i--){ var f=FX[i]; f.life-=dt; f.x+=f.vx*dt; f.y+=f.vy*dt; if(f.kind!=='heart'&&f.kind!=='num'&&f.kind!=='drop'&&f.kind!=='name') f.vy+=300*dt; if(f.kind!=='name'&&f.kind!=='num') f.rot+=dt*2; if(f.life<=0) FX.splice(i,1); }
   for(var j=FLY.length-1;j>=0;j--){ var y=FLY[j]; y.t+=dt; if(y.t>=y.d){ if(y.onLand) y.onLand(); FLY.splice(j,1); } }
   seasonParticles(dt);
@@ -817,22 +873,31 @@ function render(){
   PARTS.forEach(drawPart);
   if(season===3){ ctx.fillStyle='rgba(220,235,255,0.08)'; ctx.fillRect(0,0,WW,WH); }
   ctx.restore();
-  // flying items (world -> world or world -> screen)
+  drawUI();
+  // flying items (world -> world or world -> screen); drawn above the UI so picks visibly drop INTO the basket
   FLY.forEach(function(y){
     var k=Math.min(1,y.t/y.d), e=k<0.5?2*k*k:1-Math.pow(-2*k+2,2)/2;
     var sx=OX+y.x*S, sy=OY+y.y*S, tx=OX+y.tx*S, ty=OY+y.ty*S;
-    if(y.screenTarget){ var bp=basketScreenPos(); tx=OX+bp.x*S; ty=OY+bp.y*S; }
-    var x=sx+(tx-sx)*e, yy=sy+(ty-sy)*e - Math.sin(k*Math.PI)*(y.screenTarget||y.arc?120:20)*S;
-    ctx.save(); if(y.fade) ctx.globalAlpha=k>0.8?(1-k)*5:1;
-    spr(y.img,x,yy,y.s*S*(y.screenTarget?(1-0.35*k):1),0.5,0.5,false,y.tilt?-0.6*Math.sin(k*Math.PI):0);
-    ctx.restore();
+    var endS=null, endRot=0;
+    if(y.pileTarget){ var bt=basketBtn(); if(bt){ var sl=pileSlot(bt,Math.min(basketPile.length,PILE_VIS-1),1); tx=sl.x; ty=sl.y-sl.s*0.12; endS=sl.s; endRot=sl.rot; } }
+    var x, yy, ww;
+    if(y.pileTarget){ // smooth quadratic bezier arc, eased; ends exactly at the heap slot
+      var ee=k*k*(3-2*k), cx=(sx+tx)/2, cy=Math.min(sy,ty)-150*S, u=1-ee;
+      x=u*u*sx+2*u*ee*cx+ee*ee*tx; yy=u*u*sy+2*u*ee*cy+ee*ee*ty; ww=y.s*S+((endS||y.s*S*0.6)-y.s*S)*ee;
+      spr(y.img,x,yy,ww,0.5,0.62,false,endRot*ee+Math.sin(k*Math.PI)*0.5);
+    } else {
+      x=sx+(tx-sx)*e; yy=sy+(ty-sy)*e - Math.sin(k*Math.PI)*(y.screenTarget||y.arc?120:20)*S;
+      ctx.save(); if(y.fade) ctx.globalAlpha=k>0.8?(1-k)*5:1;
+      spr(y.img,x,yy,y.s*S*(y.screenTarget?(1-0.35*k):1),0.5,0.5,false,y.tilt?-0.6*Math.sin(k*Math.PI):0);
+      ctx.restore();
+    }
   });
-  drawUI();
   if(fade>0){ ctx.fillStyle='rgba(255,250,235,'+Math.min(1,fade)+')'; ctx.fillRect(0,0,W,H); }
 }
 function loop(ts){
   var t=ts/1000; var dt=Math.min(0.05,lastT?t-lastT:0.016); lastT=t;
-  update(dt); render(); requestAnimationFrame(loop);
+  if(window.__KFfreeze){ requestAnimationFrame(loop); return; }
+  update(dt); if(window.__KFtrace) window.__KFtrace.push([t,tiger.x,tiger.y,tiger.face]); render(); requestAnimationFrame(loop);
 }
 
 /* ---------------- grown-up recorder ---------------- */
@@ -869,7 +934,7 @@ gNames.addEventListener('click',function(e){
   if(t.getAttribute('data-c')){ setClass(t.getAttribute('data-c'),true); renderNames(); gMsg.textContent='Now playing: '+(klass==='morning'?'Morning':'Afternoon')+' class.'; }
   else if(t.getAttribute('data-del')){ var i=parseInt(t.getAttribute('data-del'),10); var nm=NAMES[klass][i]; if(!window.confirm('Remove '+(nm||'this name')+'? Their garden becomes a class garden.')) return; NAMES[klass].splice(i,1); saveNames(klass); renderNames(); }
   else if(t.id==='nadd'){ if(NAMES[klass].length<NBEDS){ NAMES[klass].push('Friend'); saveNames(klass); renderNames(); var ins=gNames.querySelectorAll('input'); var last=ins[ins.length-1]; if(last){ last.focus(); last.select(); } } }
-  else if(t.id==='nreset'){ if(!window.confirm('Clear all gardens and the basket for this class?')) return; BEDS.forEach(function(b){b.stage=0;b.t=1;}); basket=emptyBasket(); saveGarden(); gMsg.textContent='Gardens restarted for this class.'; }
+  else if(t.id==='nreset'){ if(!window.confirm('Clear all gardens and the basket for this class?')) return; BEDS.forEach(function(b){b.stage=0;b.t=1;}); basket=emptyBasket(); basketPile=[]; saveGarden(); gMsg.textContent='Gardens restarted for this class.'; }
   else if(t.id==='ndef'){ if(!window.confirm('Replace this class list with the sample names?')) return; NAMES[klass]=DEFAULT_NAMES[klass].slice(); saveNames(klass); renderNames(); }
 });
 gNames.addEventListener('input',function(e){ var t=e.target; if(t.tagName!=='INPUT') return; var i=parseInt(t.getAttribute('data-i'),10);
@@ -958,6 +1023,8 @@ window.__KF={state:function(){return {scene:scene,season:season,muted:muted,beds
       labs.forEach(function(L){ if(a.x0<L.x1&&a.x1>L.x0&&a.y0<L.y1&&a.y1>L.y0) out.push([b.i,L.i]); });
       BEDS.forEach(function(o){ if(o!==b){ var bx0=o.x-56,bx1=o.x+56,by0=o.y-40,by1=o.y+28; if(a.x0<bx1&&a.x1>bx0&&a.y0<by1&&a.y1>by0) out.push([b.i,'bed'+o.i]); } }); });
     ctx.restore(); return out; },
+  pile:function(){ return basketPile.slice(); }, startEgg:function(){ if(!egg) startEgg(); },
+  step:function(dt,n){ for(var i=0;i<(n||1);i++){ update(dt); } render(); },
   tigerBox:function(){ var b=TBOX||{l:0,r:0,t:0,b:0}; return {scene:scene,left:OX+b.l*S,right:OX+b.r*S,top:OY+b.t*S,bottom:OY+b.b*S}; },
   go:function(s){goScene(s);}, open:openGrown, toWorldScreen:function(x,y){computeView();return {x:OX+x*S,y:OY+y*S};}, beds:BEDS, animals:ANIMALS, tiger:tiger};
 })();
